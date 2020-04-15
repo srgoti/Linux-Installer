@@ -1,0 +1,574 @@
+#!/bin/bash
+
+##################################################
+##################################################
+##                                              ##
+##        Add other bootloaders support         ##
+##              Add gentoo support              ##
+##                                              ##
+##################################################
+##################################################
+
+
+#trap 'dialog --backtitle "Universal linux installer" --title "An error occured" --msgbox "Ctrl+c pressed" 10 50; clear; exit' 2
+
+shopt -s expand_aliases
+alias dialog='dialog --backtitle "Universal linux installer" --title "auto-installer"'
+
+_check() {
+	OS_NAME=$(source /etc/os-release; echo ${ID})
+	[ -f /etc/os-release ] || ln -s /usr/lib/os-release /etc/os-release
+	if [ "$(id -u)" != "0" ]; then
+		echo "This script is designed for root user"
+		exit
+	fi
+	umount -l /mnt
+	swapoff -a
+	rfkill unblock all
+	if ! ping -c2 google.com >/dev/null 2>&1; then
+		if command -v nmtui >/dev/null 2>&1; then
+			nmtui
+			if ! ping -c2 google.com >/dev/null; then
+				dialog --msgbox "Please check your network connection with the program of your choice or plug in ethernet cable" 10 50 2>/dev/null || \
+				echo "Please check your network connection with the program of your choice or plug in ethernet cable"
+				exit 0
+			fi
+		else
+			dialog --msgbox "Please check your network connection with the program of your choice or plug in ethernet cable" 10 50 2>/dev/null || \
+			echo "Please check your network connection with the program of your choice or plug in ethernet cable"
+			exit 0
+		fi
+	fi
+	if ! which dialog >/dev/null 2>&1; then
+		if command -v apt >/dev/null 2>&1; then
+			sudo apt update && sudo apt install --assume-yes dialog
+		elif command -v pacman >/dev/null 2>&1; then
+			sudo pacman -Sy --noconfirm dialog
+		elif command -v dnf >/dev/null 2>&1; then
+			 sudo dnf update && dnf upgrade && dnf install dialog
+		elif command -v zypper >/dev/null 2>&1; then
+			sudo zypper ref && sudo zypper up && sudo zypper in dialog
+		elif command -v slackpkg >/dev/null 2>&1; then
+			sudo slackpkg install dialog
+		elif command -v emerge >/dev/null 2>&1; then
+			sudo emerge --ask dev-util/dialog
+		elif command -v apk >/dev/null 2>&1; then
+			sudo apk add dialog
+		else
+			echo "Could not install dialog with any package manager, please install it manually"
+			exit 0
+		fi
+	fi
+	if ! command -v loadkeys >/dev/null 2>&1; then
+		if command -v apt >/dev/null 2>&1; then
+			sudo apt update && sudo apt install --upgrade console-data
+		elif command -v pacman >/dev/null 2>&1; then
+			sudo pacman -Syu console-data
+		elif command -v dnf >/dev/null 2>&1; then
+			 sudo dnf update && dnf upgrade && dnf install console-data
+		elif command -v zypper >/dev/null 2>&1; then
+			sudo zypper ref && sudo zypper up && sudo zypper in console-data
+		elif command -v slackpkg >/dev/null 2>&1; then
+			sudo slackpkg install console-data
+		elif command -v emerge >/dev/null 2>&1; then
+			sudo emerge --ask dev-util/console-data
+		elif command -v apk >/dev/null 2>&1; then
+			sudo apk add console-data
+		else
+			dialog --msgbox "Unable to install command loadkeys, please set keymap manually and retry" 10 50
+		fi
+	fi
+	if command -v pacman >/dev/null 2>&1; then
+		pacman -Sy >/dev/null 2>&1
+		if pacman -Qu libarchive >/dev/null 2>&1; then
+			pacman -Sy --noconfirm libarchive
+		fi
+		pacman-key --populate artix
+	fi
+	if command -v xbps-install >/dev/null 2>&1; then
+		xbps-install -S glibc-locales
+	fi
+}
+
+_is_supported() {
+	case ${OS_NAME} in
+		artix) echo "Installing for artixlinux";;
+		arch) echo "Installing for archlinux";;
+		debian) echo "Support for debian is partial, trying anyway";;
+		ubuntu) echo "Support for ubuntu is partial, trying anyway";;
+		void) echo "Installing for voidlinux";;
+	esac
+}
+
+_set_vars() {
+	timezones=($(echo -e $(find /usr/share/zoneinfo -mindepth 2 -type f | sort | sed 's/.*\/zoneinfo\///')))
+	desktop=(gnome kde cinnamon i3wm i3-gaps awesome bspwm cwm dwm budgie dde xfce lxde lxqt)
+	dm=(nodm lxdm gdm sddm xdm lightdm mdm cdm none)
+
+	if [ -d /sys/firmware/efi/efivars ]; then
+		bootloader=(efistub clover grub refind syslinux systemd-boot)
+		platform=UEFI
+	else
+		bootloader=(clover grub syslinux grub-legacy lilo)
+		platform=BIOS
+	fi
+	realdisks=($(echo -e "$(for part in $(sudo lsblk -po NAME | grep '^/'); do if (( $(wc -l <<<$(sudo lsblk ${part})) > 2 )); then echo ${part}; fi; done)"))
+	bootloaderdisks=("Use existing config file" "None" ${realdisks[@]})
+	disks=($(sudo fdisk -l | grep "^/" | cut -d' ' -f1))
+	parttypes=(ext4 ext3 ext2 btrfs xfs ntfs fat swap none)
+	tables=(dos gpt sun sgi)
+	shells=(bash zsh ash ksh fish busybox dash)
+	allpartitions=($(blkid | cut -d':' -f1))
+	case ${OS_NAME} in
+		arch) export inits=(SystemD);;
+		artix) export inits=(OpenRC runit s6);;
+		debian) export inits=(SystemD SysVInit);;
+		ubuntu) export inits=(SystemD Upstart);;
+		void) export inits=(runit);;
+	esac
+	groups=(video audio input wheel sys)
+	lightdm_greeter=(webkit2 gtk deepin qt5)
+	if [ -f /etc/locale.gen ]; then
+		localelist=($(cat /etc/locale.gen | grep -e "^#[A-z]" -e "^[A-z]" | sort))
+	elif [ -f /etc/default/libc-locales ]; then
+		localelist=($(cat /etc/default/libc-locales | grep -e "^#[A-z]" -e "^[A-z]" | sed 's/^#//' | sort))
+	else
+		localelist=($(ls /usr/share/i18n/locales/ | sort))
+	fi
+}
+
+_warn() {
+	dialog --msgbox "This script is going to install Linux, if you need, you can press Ctrl+c to exit" 10 50
+	if sudo dmesg | grep -i Bluetooth >/dev/null 2>&1; then
+		EXTRA+=(bluez)
+	fi
+}
+
+_locale() {
+	unset KEYMAP LANGUAGE TIMEZONE
+	KEYMAP=$(dialog --no-items --menu "Select keymap" 50 70 45 $(echo -e $(for file in $(find /usr/share/kbd/keymaps* -mindepth 2); do basename $file .map.gz; done | sort)) 3>&1 1>&2 2>&3)
+	sudo loadkeys ${KEYMAP}
+	LANGUAGE=$(dialog --menu "Select language" 50 70 45 ${localelist[@]} 3>&1 1>&2 2>&3)
+	TIMEZONE=$(dialog --no-items --menu "Select timezone" 50 70 45 ${timezones[@]} 3>&1 1>&2 2>&3)
+	ANSWER=1
+	HOSTNAME=0
+	while [ "${ANSWER}" != "${HOSTNAME}" ]; do
+		ANSWER="$(dialog --inputbox "Hostname" 10 50 ${OS_NAME} 3>&1 1>&2 2>&3)"
+		IFS=" " read a b <<<"${ANSWER}"
+		if [ "${ANSWER}" = "${a}" ]; then
+			HOSTNAME="${ANSWER}"
+		fi
+	done
+}
+_partitionning() {
+	disks=($(sudo fdisk -l | grep "^/" | cut -d' ' -f1))
+	unset ROOT ROOTPART PART
+	if dialog --yesno "Create partition table ?" 10 50; then
+		PART=$(dialog --no-items --menu "Select partition table" 50 70 45 ${tables[@]} 3>&1 1>&2 2>&3)
+	fi
+	while true; do
+		if dialog --yesno "Repartition disks ?" 10 50; then
+			DISKTOPARTITION=$(dialog --no-items --menu "Select disk to partition" 50 70 45 ${realdisks[@]} 3>&1 1>&2 2>&3)
+			sudo cfdisk ${DISKTOPARTITION}
+		else
+			break
+		fi
+	done
+	ROOT=$(dialog --no-items --menu "Select root directory" 50 70 45 ${disks[@]} 3>&1 1>&2 2>&3)
+	ROOTPART=$(dialog --no-items --menu "Select partition type" 50 70 45 ${parttypes[@]} 3>&1 1>&2 2>&3)
+	disks=( "${disks[@]/$ROOT}" )
+	if [ -d /sys/firmware/efi/efivars ]; then
+		ESP=$(dialog --no-items --menu "Select EFI system partition" 50 70 45 ${disks[@]} 3>&1 1>&2 2>&3)
+		disks=( "${disks[@]/$ESP}" )
+	fi
+	while [ "$?" = "0" ]; do
+		alldisks=("$(echo -e $(echo ${disks[@]} | sed -z 's/\ /\n/g' | awk '{print $0" "$0}' | rev | sed 's/\/ved\///' | rev))")
+		newpart+=($(dialog --no-items --cancel-label "Done" --menu "Configure disks" 50 70 40 ${disks[@]} 3>&1 1>&2 2>&3))
+		if [ "$?" != "0" ]; then
+			break
+		fi
+		newformat+=($(dialog --no-items --menu "Select partition type" 50 70 45 ${parttypes[@]} 3>&1 1>&2 2>&3))
+		if [ "${newformat[-1]}" != "swap" ]; then
+			newmpoint+=($(dialog --inputbox "Select mountpoint" 10 50 3>&1 1>&2 2>&3))
+		else
+			newmpoint+=(swap)
+		fi
+	done
+}
+_bootloader() {
+	unset BL BLROOT BLEXISTING
+	BL=$(dialog --no-items --menu "Select Bootloader" 50 70 45 ${bootloader[@]} 3>&1 1>&2 2>&3)
+	BLROOT=$(dialog --no-items --menu "Select root for bootloader install" 50 70 45 "${bootloaderdisks[@]}" 3>&1 1>&2 2>&3)
+	if [ "${BLROOT}" = "Use existing config file" ]; then
+		BLEXISTING=$(dialog  --no-items --menu "Select existing config" 50 70 45 ${allpartitions[@]} 3>&1 1>&2 2>&3)
+	elif [ "${BLROOT}" = "None" ]; then
+		unset BL BLROOT
+	fi
+}
+_desktop() {
+	unset DESKTOP DM
+	DESKTOP=$(dialog --no-items --menu "Select Desktop" 50 70 45 ${desktop[@]} 3>&1 1>&2 2>&3)
+	DM=$(dialog --no-items --menu "Select Diaplay manager" 50 70 45 ${dm[@]} 3>&1 1>&2 2>&3)
+	if [ "${DM}" = "none" ]; then
+		unset DM
+	elif [ "${DM}" = "lightdm" ]; then
+		GREETER+=($(dialog --no-items --menu "Select greeter for lightdm" 50 70 45 ${lightdm_greeter[@]} 3>&1 1>&2 2>&3))
+	fi
+}
+_init() {
+	unset INIT
+	INIT=$(dialog --no-items --menu "Select init system" 50 70 45 ${inits[@]} 3>&1 1>&2 2>&3)
+}
+_users() {
+	unset ROOTPWD ROOTSHELL USERNAME REALNAME not_UPWD UPWD USHELL
+	if [ "${ROOTPWD[0]}" = "" ]; then
+		while [ -z "${ROOTPWD[0]}" ]; do
+			ROOTPWD=($(dialog --insecure --passwordbox "Select root password" 10 50 --insecure --passwordbox "Re-enter root password" 10 50 3>&1 1>&2 2>&3))
+			if [ "$?" != "0" ]; then
+				break
+			fi
+			if [ "${ROOTPWD[0]}" != "${ROOTPWD[1]}" ]; then
+				dialog --msgbox "Error: passwords do not match" 10 50
+				unset ROOTPWD
+			elif [ "${ROOTPWD[0]}" = "" ]; then
+				dialog --msgbox "Error: empty password, if you don't want a password, then click cancel" 10 50
+				unset ROOTPWD
+			else
+				break
+			fi
+		done
+		ROOTSHELL=$(dialog --no-cancel --no-items --menu "Select shell for root" 50 70 40 ${shells[@]} 3>&1 1>&2 2>&3)
+	fi
+	export i=0
+	while [ "$?" = "0" ]; do
+		if dialog --yesno "Create new user ?" 10 50; then
+			USERNAME[$i]=$(dialog --inputbox "Username" 10 50 3>&1 1>&2 2>&3)
+			if dialog --yesno "Set a real name for user ?" 10 50; then
+				REALNAME[$i]="$(dialog --inputbox "Real name for user" 10 50 3>&1 1>&2 2>&3)"
+			fi
+			if [ "${not_UPWD[0]}" = "" ]; then
+				while [ -z "${not_UPWD[0]}" ]; do
+					not_UPWD=($(dialog --insecure --passwordbox "Select user password" 10 50 --insecure --passwordbox "Re-enter user password" 10 50 3>&1 1>&2 2>&3))
+					if [ "$?" != "0" ]; then
+						unset not_UPWD
+						break
+					fi
+					if [ "${not_UPWD[0]}" = "${not_UPWD[1]}" ]; then
+						UPWD[$i]=${not_UPWD[0]}
+						break
+					else
+						dialog --msgbox "Error: passwords do not match" 10 50
+						unset not_UPWD
+					fi
+				done
+			fi
+			USHELL[$i]=$(dialog --no-cancel --no-items --menu "Select shell for user" 50 70 40 ${shells[@]} 3>&1 1>&2 2>&3)
+			if dialog --yesno "Create home directory " 10 50; then
+				HOME[$i]=yes
+			fi
+		else
+			break
+		fi
+		[ -n "${not_UPWD}" ] && unset not_UPWD
+		((i++))
+	done
+}
+
+_pure_menu() {
+	options[0]="Locales"
+	options[1]="Partitionning"
+	options[2]="Bootloader"
+	options[3]="Desktop"
+	options[5]="Users"
+	options[6]="Finish install"
+	if [ "${#inits[@]}" != "1" ]; then
+		options[4]="Init system"
+	fi
+	while [ "$i" != "7" ]; do
+		case $(dialog --no-items --menu "Installation menu" 20 50 45 "${options[@]}" 3<&1 1>&2 2>&3) in
+			Locales) _locale;;
+			Partitionning) _partitionning;;
+			Bootloader) _bootloader;;
+			Desktop) _desktop;;
+			"Init system") _init;;
+			Users) _users;;
+			"Finish install") _os_conf;;
+			"") exit;;
+		esac
+	done
+}
+
+_os_conf() {
+	dialog --infobox "Configuring disks" 10 50
+	sudo mkfs.${ROOTPART} -qF ${ROOT}
+	sudo mount ${ROOT} /mnt
+	sudo mkfs.fat -F32 ${ESP}
+	sudo mkdir -p /mnt/boot
+	sudo mount ${ESP} /mnt/boot
+	for ((i=0; i<${#newpart[@]}; i++)); do
+			case ${newformat[$i]} in
+				swap)
+					eval $(blkid ${newpart[$i]} | cut -d' ' -f3)
+					if [ "${TYPE}" != "swap" ]; then
+						sudo mkswap ${newpart[$i]}
+					fi
+					sudo swapon ${newpart[$i]}
+				;;
+				*)
+					if [ "${newformat[$i]}" != "none" ]; then
+						sudo mkfs.${newformat[$i]} ${newpart[$i]}
+					fi
+					sudo mkdir /mnt${newmpoint[$i]}
+					sudo mount ${newpart[$i]} /mnt${newmpoint[$i]}
+				;;
+			esac
+	done
+
+	dialog --colors --infobox "\Z2Done\Zn Configuring disks\nInstalling base packages" 10 50
+	case ${OS_NAME} in
+		arch)
+			if [ "${DESKTOP}" = "kde" ]; then
+				export DESKTOP=plasma
+			fi
+			if dialog --yesno "Do you want to enable AUR support ?" 10 50; then
+				export EXTRA+=(base-devel)
+			fi
+			dialog --prgbox "Installing base packages" "pacstrap /mnt base linux linux-firmware networkmanager ${BL} ${DESKTOP} ${DM} ${ROOTSHELL} $(echo ${USHELL[@]}) $(echo ${EXTRA[@]})" 20 100
+		;;
+		artix)
+			case ${INIT} in
+				runit) export svDM="${DM}-runit"; export INIT=(runit elogind-runit networkmanager-runit);;
+				s6) export svDM="${DM}-s6"; export INIT=(s6 networkmanager-s6 elogind-s6);;
+				OpenRC) export svDM="displaymanager-openrc"; export INIT=(openrc networkmanager-openrc elogind-openrc);;
+			esac
+			if [ "${DESKTOP}" = "kde" ]; then
+				export DESKTOP=plasma
+			fi
+			if dialog --yesno "Do you want to enable AUR support ?" 10 50; then
+				export EXTRA+=(pamac)
+			fi
+			if [ -n "${GREETER}" ]; then
+				case ${GREETER} in
+					webkit2) EXTRA+=(lightdm-webkit2-greeter);;
+					gtk) EXTRA+=(lightdm-gtk-greeter);;
+					qt) EXTRA+=(lightdm-qt-greeter);;
+					deepin) EXTRA+=(deepin-session-ui);;
+				esac
+			fi
+			for package in ${DM} ${EXTRA[@]}; do
+				if pacman -Si "${package}-${INIT}" >/dev/null 2>&1; then
+					EXTRA+=("${package}-${INIT}");
+				fi
+			done
+			dialog --prgbox "Installing base packages" "basestrap /mnt base base-devel linux linux-firmware ${BL} ${DESKTOP} ${svDM} ${DM} ${ROOTSHELL} $(echo ${USHELL[@]}) $(echo ${EXTRA[@]}) $(echo ${INIT[@]})" 20 100
+		;;
+		void)
+			mkdir -p /mnt/var/db/xbps/keys /mnt/usr/share
+			cp -a /usr/share/xbps.d /mnt/usr/share
+			cp /var/db/xbps/keys/*.plist /mnt/var/db/xbps/keys
+			dialog --prgbox "Installing base packages" "xbps-install -r /mnt/ -SyU base-system NetworkManager ${BL} ${DESKTOP} ${DM} ${ROOTSHELL} ${USHELL[@]} ${EXTRA[@]}" -1 -1
+			xbps-reconfigure -r /mnt -f base-files >/dev/null 2>&1
+			cat <<- EOF | chroot /mnt
+				xbps-reconfigure -a
+			EOF
+		;;
+		debian)
+			debootstrap --download-only stable /mnt
+		;;
+		ubuntu)
+			unsquashfs /cdrom/casper/filesystem.squashfs /mnt
+		;;
+		gentoo)
+			case $(uname -m) in
+				x86_64 | amd64) preURL="https://bouncer.gentoo.org/fetch/root/all/releases/amd64/autobuilds/current-stage3-amd64"; ARCH="amd64";;
+				x86 | i*86) preURL="https://bouncer.gentoo.org/fetch/root/all/releases/x86/autobuilds/current-stage3-i686/"; ARCH="i386";;
+			esac
+			preURL="https://bouncer.gentoo.org/fetch/root/all/releases/amd64/autobuilds/current-stage3-amd64"
+			URL="$(wget "$preURL" -q -S --spider 2>&1 | grep --color=never "^ Location")"
+#| sed -z 's/^ Location: //')"
+			echo $URL
+
+
+
+
+
+
+		;;
+	esac
+
+	if command -v genfstab; then
+		genfstab -U /mnt >> /mnt/etc/fstab
+	elif command -v fstabgen; then
+		fstabgen -U /mnt >> /mnt/etc/fstab
+	else dialog --infobox "Could not generate fstab"
+	fi
+
+	dialog --colors --infobox "\Z2Done\Zn Configuring disks\n\Z2Done\Zn Installing base packages\nSetting locale options" 10 50
+	echo KEYMAP=$KEYMAP >> /mnt/etc/vconsole.conf
+	if [ "${OS_NAME}" = "void" ]; then
+		sed "s/^KEYMAP\=.*/KEYMAP\=${KEYMAP}/" -i /mnt/etc/rc.conf
+	fi
+	cat <<- EOF | chroot /mnt
+		if grep "GNU libc" <<<"$(ldd --version)" >/dev/null 2>&1; then
+			sed "s/^#${LANGUAGE}/${LANGUAGE}/" /etc/locale.gen -i; echo LANG=${LANGUAGE} >> /etc/locale.conf
+			if command -v locale-gen; then
+				locale-gen
+			elif command -v xbps-reconfigure; then
+				xbps-reconfigure -f glibc-locales
+			fi
+		fi
+		ln -sf /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
+		hwclock --systohc >/dev/null 2>&1
+		echo ${HOSTNAME} > /etc/hostname
+	EOF
+
+	dialog --colors --infobox "\Z2Done\Zn Configuring disks\n\Z2Done\Zn Installing base packages\n\Z2Done\Zn Setting locale options\nEnabling system services" 10 50
+	cat <<- EOF | chroot /mnt
+		case $(basename $(readlink -f /sbin/init)) in
+			runit-init)
+				if [ -d "/etc/sv" ]; then
+					export RUNITSVDIR="/etc/sv"
+				elif [ -d "/etc/runit/sv" ]; then
+					export RUNITSVDIR="/etc/runit/sv"
+				else
+						umount -l /mnt
+						umount -l /media
+						swapoff -a
+						echo "Could not find runit services dir"
+						exit
+				fi
+				ln -s \${RUNITSVDIR}/NetworkManager /etc/runit/runsvdir/default
+				if grep bluez <<<${EXTRA[@]} >/dev/null 2>&1; then
+					ln -s \${RUNITSVDIR}/bluez /etc/runit/runsvdir/default
+				fi
+				if [ -n "${DM}" ]; then
+					ln -s \${RUNITSVDIR}/${DM} /etc/runit/runsvdir/default
+				fi
+			;;
+			systemd)
+				systemctl enable NetworkManager
+				if grep bluez <<<${EXTRA[@]} >/dev/null 2>&1; then
+					systemctl enable bluetooth
+				fi
+				if [ -n "${DM}" ]; then
+					systemctl enable ${DM}
+				fi
+			;;
+			sysvinit)
+				update-rc.d NetworkManager enable
+				if grep bluez <<<${EXTRA[@]} >/dev/null 2>&1; then
+					update-rc.d bluez enable
+				fi
+				if [ -n "${DM}" ]; then
+					update-rc.d ${DM} enable
+				fi
+			;;
+			openrc-init)
+				echo "${EXTRA[@]},${DM},${KEYMAP}"; sleep 4
+				rc-update add NetworkManager default
+				if grep bluez <<<${EXTRA[@]} >/dev/null 2>&1; then
+					rc-update add bluetoothd default
+				fi
+				if [ -n "${DM}" ]; then
+					rc-update add xdm default
+					sed "s/^DISPLAYMANAGER\=.*/DISPLAYMANAGER\=\"${DM}\"/" /etc/conf.d/xdm -i
+				fi
+				sed "s/^keymap\=.*/keymap=\"${KEYMAP}\"/" /etc/conf.d/keymaps -i
+			;;
+		esac
+	EOF
+
+	# This is needed for some distros
+	cat <<- EOF | chroot /mnt
+		install -m 0755 -o 22 -g 22 -d /var/lib/dbus
+		dbus-uuidgen > /var/lib/dbus/machine-id
+		ln -s /usr/lib/os-release /etc/os-release -f
+	EOF
+
+	dialog --colors --infobox "\Z2Done\Zn Configuring disks\n\Z2Done\Zn Installing base packages\n\Z2Done\Zn Setting locale options\n\Z2Done\Zn Enabling system services\nAdding and configuring users" 10 50
+	if [ -n "${ROOTPWD}" ]; then
+		cat <<- EOF | chroot /mnt
+			echo -e "${ROOTPWD}\n${ROOTPWD}" | passwd root >/dev/null 2>&1
+		EOF
+	fi
+	for ((r=0; r<${#USERNAME[@]}; r++)); do
+		if [ -n "${REALNAME[$r]}" ]; then
+			export realname="-c ${REALNAME[$r]}"
+		fi
+		if [ -n "${HOME[$r]}" ]; then
+			export home=("-m")
+		else
+			export home=("-M")
+		fi
+		if grep "^pulse:" /mnt/etc/group >/dev/null 2>&1; then
+			groups+=(pulse-access pulse)
+		fi
+		chroot /mnt useradd "${home}" -G "$(printf "%s," "${groups[@]}" | sed 's/.$//')" -s "$(if [ "${USHELL[$r]}" = "bash" ]; then echo "/bin/bash"; else command -v ${USHELL[$r]}; fi)" ${realname} "${USERNAME[$r]}"
+		if [ -z "${UPWD[$r]}" ]; then
+			passwd -d "${USERNAME[$r]}"
+		else
+			echo -e "${UPWD[$r]}\n${UPWD[$r]}" | passwd "${USERNAME[$r]}"
+		fi
+		unset home password realname
+	done
+
+	dialog --colors --infobox "\Z2Done\Zn Configuring disks\n\Z2Done\Zn Installing base packages\n\Z2Done\Zn Setting locale options\n\Z2Done\Zn Enabling system services\n\Z2Done\Zn Adding and configuring users\nInstalling bootloader" 10 50
+	if [ -n "${BL}" ]; then
+		case ${BL} in
+			grub)
+				if [ -n "${BLEXISTING}" ];then
+					mkdir -p /media
+					umount -l /media
+					mount "${BLEXISTING}" /media
+					sudo mount -t proc /{,media/}proc
+					sudo mount --rbind /{,media/}sys
+					sudo mount --rbind /{,media/}dev
+					chroot /media grub-mkconfig -o /boot/grub/grub.cfg
+					sudo umount -l /media/{dev,sys,proc}
+					sudo umount -l /media
+				else
+					if [ -d /sys/firmware/efi/efivars ]; then
+						cat <<- EOF | chroot /mnt
+							grub-install --target=x86_64-efi --efi-directory=${ESP} --bootloader-id=GRUB
+							update-grub
+						EOF
+					else
+						cat <<- EOF | chroot /mnt
+							grub-install ${BLROOT}
+							update-grub
+						EOF
+					fi
+				fi
+			;;
+			syslinux)
+				cat <<- EOF | chroot /mnt
+					syslinux --directory /boot/syslinux --install ${BLROOT}
+				EOF
+			;;
+			systemd-boot)
+				bootctl --path=/mnt/boot install
+			;;
+			refind)
+				refind-install --usedefault ${ESP} --alldrivers
+			;;
+			efistub)
+				efibootmgr --disk $(echo ${ESP} | sed 's/.$//') --part $(echo ${ESP} | rev | sed 's/[^0-9]*//g') --create --label "${OS_NAME}" --loader /vmlinuz-linux --unicode "root=PARTUUID=$(blkid ${ESP} -s PARTUUID -o value) rw initrd=\initramfs-linux.img" --verbose
+			;;
+		esac
+	fi
+
+	dialog --colors --infobox "\Z2Done\Zn Configuring disks\n\Z2Done\Zn Installing base packages\n\Z2Done\Zn Setting locale options\n\Z2Done\Zn Enabling system services\n\Z2Done\Zn Adding and configuring users\n\Z2Done\Zn Installing bootloader" 10 50
+	umount -l /mnt
+	swapoff -a
+	export i=7
+}
+
+_check
+_is_supported
+_set_vars
+_warn
+export i=0
+_pure_menu
+if dialog --yesno "Do you want to reboot ?" 10 50; then
+	sudo reboot
+fi
