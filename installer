@@ -129,7 +129,7 @@ _set_vars() {
 	groups=(video audio input wheel sys)
 	lightdm_greeter=(webkit2 gtk deepin qt5)
 	if [ -f /etc/locale.gen ]; then
-		localelist=($(cat /etc/locale.gen | grep -e "^#[[:alpha:]]" -e "^[[:alpha:]]" | sort))
+		localelist=($(cat /etc/locale.gen | grep -e "^#[[:alpha:]]" -e "^[[:alpha:]]" | sort | sed 's/^\#//'))
 	elif [ -f /etc/default/libc-locales ]; then
 		localelist=($(cat /etc/default/libc-locales | grep -e "^#[[:alpha:]]" -e "^[[:alpha:]]" | sed 's/^#//' | sort))
 	else
