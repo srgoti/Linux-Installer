@@ -112,7 +112,8 @@ _set_vars() {
 		bootloader=(clover grub syslinux grub-legacy lilo)
 		platform=BIOS
 	fi
-	realdisks=($(echo -e "$(for part in $(sudo lsblk -po NAME | grep '^/'); do if (( $(wc -l <<<$(sudo lsblk ${part})) > 2 )); then echo ${part}; fi; done)"))
+	realdisks=($(if (( $(wc -l <<< $(lsblk -po NAME | grep '^/')) >> 2)); then for part in $(lsblk -po NAME | grep '^/'); do echo ${part}; done; else exit; fi))
+#	realdisks=($(echo -e "$(for part in $(sudo lsblk -po NAME | grep '^/'); do if (( $(wc -l <<<$(sudo lsblk ${part})) > 2 )); then echo ${part}; fi; done)"))
 	bootloaderdisks=("Use existing config file" "None" ${realdisks[@]})
 	disks=($(sudo fdisk -l | grep "^/" | cut -d' ' -f1))
 	parttypes=(ext4 ext3 ext2 btrfs xfs ntfs fat swap none)
